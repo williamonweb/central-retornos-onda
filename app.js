@@ -1,3 +1,5 @@
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
+
 const USERS = [
   { username: 'william', password: 'onda123', name: 'William', role: 'Administrador', permissions: ['all'] },
   { username: 'luise', password: 'luise123', name: 'Luise', role: 'Operacional', permissions: ['view', 'create', 'edit'] },
@@ -6,7 +8,6 @@ const USERS = [
 
 const STORAGE_KEYS = {
   session: 'onda_session',
-  records: 'onda_records',
 };
 
 const PROJECT_STATUS = {
@@ -19,10 +20,10 @@ const PROJECT_STATUS = {
     'Atualização rápida de status dentro da lista de acompanhamentos.',
     'Exclusão de registro com confirmação antes de apagar.',
     'Tela de relatórios para acompanhamento da Karem.',
-    'Salvamento local no navegador para testes rápidos.',
+    'Sincronização online via Supabase entre os computadores.',
   ],
   missing: [
-    'Banco de dados online para compartilhar entre computadores.',
+    'Login 100% pelo banco com autenticação real por usuário.',
     'Histórico detalhado de cada ação com data e hora.',
     'Campo de número de tentativas de contato.',
     'Botões específicos como Ligou, WhatsApp enviado, Remarcar e Aprovou orçamento.',
@@ -33,67 +34,18 @@ const PROJECT_STATUS = {
   ],
 };
 
-const defaultRecords = [
-  {
-    id: crypto.randomUUID(),
-    tutor: 'Carla Mendes',
-    pet: 'Thor',
-    phone: '(51) 99999-1010',
-    type: 'Falta',
-    date: '2026-04-16',
-    vet: 'Dra. Bruna',
-    owner: 'Luise',
-    status: 'Pendente',
-    action: 'Ainda sem contato',
-    notes: 'Cliente faltou na consulta de revisão.',
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: crypto.randomUUID(),
-    tutor: 'Ricardo Alves',
-    pet: 'Mel',
-    phone: '(51) 98888-2233',
-    type: 'Pós-cirúrgico',
-    date: '2026-04-15',
-    vet: 'Dr. Gustavo',
-    owner: 'William',
-    status: 'Em contato',
-    action: 'WhatsApp enviado',
-    notes: 'Cirurgia de castração. Confirmar apetite, medicação e ferida.',
-    createdAt: new Date().toISOString(),
-  },
-  {
-    id: crypto.randomUUID(),
-    tutor: 'João Pereira',
-    pet: 'Luna',
-    phone: '(51) 97777-4455',
-    type: 'Orçamento sem resposta',
-    date: '2026-04-14',
-    vet: 'Dra. Raquel',
-    owner: 'Karem',
-    status: 'Sem resposta',
-    action: 'Ligação sem retorno',
-    notes: 'Orçamento de limpeza dentária enviado.',
-    createdAt: new Date().toISOString(),
-  },
-];
-
 const state = {
   user: getSession(),
   view: 'dashboard',
   filters: { search: '', type: '', status: '', owner: '' },
+  records: [],
+  loading: true,
+  saving: false,
+  configReady: false,
+  error: '',
 };
 
-function getRecords() {
-  const saved = localStorage.getItem(STORAGE_KEYS.records);
-  if (saved) return JSON.parse(saved);
-  localStorage.setItem(STORAGE_KEYS.records, JSON.stringify(defaultRecords));
-  return defaultRecords;
-}
-
-function saveRecords(records) {
-  localStorage.setItem(STORAGE_KEYS.records, JSON.stringify(records));
-}
+let supabase = null;
 
 function getSession() {
   const saved = localStorage.getItem(STORAGE_KEYS.session);
@@ -108,6 +60,10 @@ function setSession(user) {
 function clearSession() {
   localStorage.removeItem(STORAGE_KEYS.session);
   state.user = null;
+}
+
+function setError(message) {
+  state.error = message || '';
 }
 
 function formatType(type) {
@@ -131,10 +87,9 @@ function countBy(records, predicate) {
 }
 
 function filteredRecords() {
-  const records = getRecords();
-  return records.filter((record) => {
+  return state.records.filter((record) => {
     const search = state.filters.search.toLowerCase();
-    const matchesSearch = !search || [record.tutor, record.pet, record.phone, record.vet, record.notes]
+    const matchesSearch = !search || [record.tutor, record.pet, record.phone, record.vet, record.notes, record.action]
       .join(' ')
       .toLowerCase()
       .includes(search);
@@ -145,10 +100,121 @@ function filteredRecords() {
   });
 }
 
+function parseMeta(rawText) {
+  if (!rawText) return { vet: '', action: '', notes: '', date: '' };
+  try {
+    const parsed = JSON.parse(rawText);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        vet: parsed.vet || '',
+        action: parsed.action || '',
+        notes: parsed.notes || '',
+        date: parsed.date || '',
+      };
+    }
+  } catch (_) {
+    // legado em texto simples
+  }
+  return { vet: '', action: 'Atualização registrada', notes: rawText, date: '' };
+}
+
+function toDbRecord(formValues) {
+  return {
+    tutor: formValues.tutor,
+    pet: formValues.pet,
+    telefone: formValues.phone,
+    categoria: formValues.type,
+    status: formValues.status,
+    responsavel: formValues.owner,
+    criado_por: state.user?.name || formValues.owner,
+    observacao: JSON.stringify({
+      vet: formValues.vet || '',
+      action: formValues.action || '',
+      notes: formValues.notes || '',
+      date: formValues.date || '',
+    }),
+  };
+}
+
+function fromDbRecord(row) {
+  const meta = parseMeta(row.observacao);
+  return {
+    id: row.id,
+    tutor: row.tutor || '',
+    pet: row.pet || '',
+    phone: row.telefone || '',
+    type: row.categoria || 'Falta',
+    date: meta.date || (row.criado_em ? row.criado_em.slice(0, 10) : ''),
+    vet: meta.vet || '',
+    owner: row.responsavel || '',
+    status: row.status || 'Pendente',
+    action: meta.action || 'Sem atualização',
+    notes: meta.notes || '',
+    createdAt: row.criado_em || new Date().toISOString(),
+  };
+}
+
+async function initSupabase() {
+  try {
+    const response = await fetch('/api/config', { cache: 'no-store' });
+    const config = await response.json();
+    if (!config.supabaseUrl || !config.supabaseAnonKey) {
+      throw new Error('As variáveis SUPABASE_URL e SUPABASE_ANON_KEY não foram encontradas no Vercel.');
+    }
+    supabase = createClient(config.supabaseUrl, config.supabaseAnonKey);
+    state.configReady = true;
+  } catch (error) {
+    console.error(error);
+    setError(`Falha ao carregar a configuração online. ${error.message}`);
+  }
+}
+
+async function loadRecords() {
+  if (!supabase) return;
+  state.loading = true;
+  app();
+
+  const { data, error } = await supabase
+    .from('registros')
+    .select('*')
+    .order('criado_em', { ascending: false });
+
+  if (error) {
+    console.error(error);
+    setError(`Não foi possível carregar os registros. ${error.message}`);
+    state.loading = false;
+    app();
+    return;
+  }
+
+  state.records = (data || []).map(fromDbRecord);
+  state.loading = false;
+  setError('');
+  app();
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 function app() {
   const root = document.getElementById('app');
   root.innerHTML = state.user ? renderMain() : renderLogin();
   bindEvents();
+}
+
+function renderAlert() {
+  if (!state.error) return '';
+  return `<div class="app-alert">${escapeHtml(state.error)}</div>`;
+}
+
+function renderLoading(message = 'Carregando dados online...') {
+  return `<div class="empty-state">${escapeHtml(message)}</div>`;
 }
 
 function renderLogin() {
@@ -175,7 +241,7 @@ function renderLogin() {
             </div>
             <div class="feature-box">
               <strong>Equipe</strong>
-              <span>William, Luise e Karem com acesso individual e histórico das ações.</span>
+              <span>William, Luise e Karem com acesso individual e registros sincronizados online.</span>
             </div>
           </div>
         </div>
@@ -184,6 +250,7 @@ function renderLogin() {
           <div class="login-panel">
             <h2>Entrar no sistema</h2>
             <p>Use seu usuário e senha para acessar os acompanhamentos da clínica.</p>
+            ${renderAlert()}
             <form id="loginForm">
               <div class="form-row">
                 <label class="label">Usuário</label>
@@ -196,8 +263,8 @@ function renderLogin() {
               <button class="primary-btn" type="submit">Entrar</button>
             </form>
             <div class="helper-card">
-              <strong style="display:block; margin-bottom:8px; color:white;">Primeira versão pronta para teste</strong>
-              Depois vamos adaptar campos, filtros, tela e fluxo conforme a rotina real da clínica.
+              <strong style="display:block; margin-bottom:8px; color:white;">Versão online sincronizada</strong>
+              Os registros agora são carregados e salvos no banco online. O login ainda usa os 3 acessos definidos nessa fase inicial.
             </div>
           </div>
         </div>
@@ -207,7 +274,7 @@ function renderLogin() {
 }
 
 function renderMain() {
-  const records = getRecords();
+  const records = state.records;
   const visibleRecords = filteredRecords();
   const today = new Date().toLocaleDateString('pt-BR');
 
@@ -218,7 +285,7 @@ function renderMain() {
           <div class="brand-badge">● Sistema interno</div>
           <h2>Central de Retornos ONDA</h2>
           <p>Gestão de faltas, pós-cirúrgicos e orçamentos com controle por equipe.</p>
-          <div class="role-tag">${state.user.role}</div>
+          <div class="role-tag">${escapeHtml(state.user.role)}</div>
         </div>
 
         <div class="nav">
@@ -230,7 +297,7 @@ function renderMain() {
 
         <div class="sidebar-footer">
           <small>Usuário logado</small>
-          <strong>${state.user.name}</strong>
+          <strong>${escapeHtml(state.user.name)}</strong>
           <div style="height:10px"></div>
           <button class="logout-btn" id="logoutBtn">Sair</button>
         </div>
@@ -243,15 +310,17 @@ function renderMain() {
             <p>${pageSubtitle()} • ${today}</p>
           </div>
           <div class="user-chip">
-            <strong>${state.user.name}</strong>
-            <span>${state.user.role} • Clínica Onda Animal</span>
+            <strong>${escapeHtml(state.user.name)}</strong>
+            <span>${escapeHtml(state.user.role)} • Clínica Onda Animal</span>
           </div>
         </div>
 
-        ${state.view === 'dashboard' ? renderDashboard(records) : ''}
-        ${state.view === 'records' ? renderRecords(visibleRecords) : ''}
-        ${state.view === 'new' ? renderNewForm() : ''}
-        ${state.view === 'reports' ? renderReports(records) : ''}
+        ${renderAlert()}
+        ${state.loading ? renderLoading() : ''}
+        ${!state.loading && state.view === 'dashboard' ? renderDashboard(records) : ''}
+        ${!state.loading && state.view === 'records' ? renderRecords(visibleRecords) : ''}
+        ${!state.loading && state.view === 'new' ? renderNewForm() : ''}
+        ${!state.loading && state.view === 'reports' ? renderReports(records) : ''}
       </main>
     </div>
   `;
@@ -269,7 +338,7 @@ function renderDashboard(records) {
     <div class="panel-grid">
       <section class="card">
         <h3>Últimos acompanhamentos</h3>
-        ${renderRecordsTable(records.slice().reverse().slice(0, 6), false)}
+        ${renderRecordsTable(records.slice(0, 6), false)}
       </section>
       <section class="card">
         <h3>Resumo rápido</h3>
@@ -297,7 +366,7 @@ function renderRecords(records) {
     <section class="card">
       <h3>Lista de acompanhamentos</h3>
       <div class="filters">
-        <input id="searchFilter" value="${state.filters.search}" placeholder="Buscar por tutor, pet, telefone, veterinário ou observação" />
+        <input id="searchFilter" value="${escapeHtml(state.filters.search)}" placeholder="Buscar por tutor, pet, telefone, veterinário ou observação" />
         <select id="typeFilter">
           <option value="">Todos os tipos</option>
           <option ${state.filters.type === 'Falta' ? 'selected' : ''}>Falta</option>
@@ -346,20 +415,20 @@ function renderRecordsTable(records, allowActions) {
           ${records.map(record => `
             <tr>
               <td>
-                <strong>${record.tutor}</strong><br>
-                ${record.pet}<br>
-                <span class="note">${record.phone}</span>
+                <strong>${escapeHtml(record.tutor)}</strong><br>
+                ${escapeHtml(record.pet)}<br>
+                <span class="note">${escapeHtml(record.phone)}</span>
               </td>
               <td>
-                <span class="badge ${formatType(record.type)}">${record.type}</span>
+                <span class="badge ${formatType(record.type)}">${escapeHtml(record.type)}</span>
               </td>
-              <td>${new Date(record.date + 'T12:00:00').toLocaleDateString('pt-BR')}</td>
-              <td>${record.vet || '-'}</td>
-              <td>${record.owner}</td>
-              <td><span class="badge ${formatStatus(record.status)}">${record.status}</span></td>
+              <td>${record.date ? new Date(record.date + 'T12:00:00').toLocaleDateString('pt-BR') : '-'}</td>
+              <td>${escapeHtml(record.vet || '-')}</td>
+              <td>${escapeHtml(record.owner)}</td>
+              <td><span class="badge ${formatStatus(record.status)}">${escapeHtml(record.status)}</span></td>
               <td>
-                <strong>${record.action}</strong><br>
-                <span class="note">${record.notes || 'Sem observações.'}</span>
+                <strong>${escapeHtml(record.action)}</strong><br>
+                <span class="note">${escapeHtml(record.notes || 'Sem observações.')}</span>
               </td>
               ${allowActions ? `
                 <td>
@@ -439,7 +508,7 @@ function renderNewForm() {
           </div>
         </div>
         <div style="height:16px"></div>
-        <button class="primary-btn" type="submit">Salvar registro</button>
+        <button class="primary-btn" type="submit">${state.saving ? 'Salvando...' : 'Salvar registro'}</button>
       </form>
     </section>
   `;
@@ -469,13 +538,13 @@ function renderReports(records) {
         <div class="meta-item status-panel done-panel">
           <strong>O que já foi feito</strong>
           <ul class="status-list">
-            ${PROJECT_STATUS.done.map(item => `<li>${item}</li>`).join('')}
+            ${PROJECT_STATUS.done.map(item => `<li>${escapeHtml(item)}</li>`).join('')}
           </ul>
         </div>
         <div class="meta-item status-panel pending-panel">
           <strong>O que ainda está faltando</strong>
           <ul class="status-list">
-            ${PROJECT_STATUS.missing.map(item => `<li>${item}</li>`).join('')}
+            ${PROJECT_STATUS.missing.map(item => `<li>${escapeHtml(item)}</li>`).join('')}
           </ul>
         </div>
       </div>
@@ -483,8 +552,8 @@ function renderReports(records) {
       <div class="meta-list">
         ${USERS.map(user => `
           <div class="meta-item">
-            <strong>${user.name}</strong>
-            <span>${user.role}. Ativos: ${countBy(records, r => r.owner === user.name && r.status !== 'Resolvido')} • Resolvidos: ${countBy(records, r => r.owner === user.name && r.status === 'Resolvido')}</span>
+            <strong>${escapeHtml(user.name)}</strong>
+            <span>${escapeHtml(user.role)}. Ativos: ${countBy(records, r => r.owner === user.name && r.status !== 'Resolvido')} • Resolvidos: ${countBy(records, r => r.owner === user.name && r.status === 'Resolvido')}</span>
           </div>
         `).join('')}
       </div>
@@ -527,6 +596,7 @@ function bindEvents() {
       }
       setSession(user);
       app();
+      loadRecords();
     });
   }
 
@@ -548,29 +618,38 @@ function bindEvents() {
 
   const recordForm = document.getElementById('recordForm');
   if (recordForm) {
-    recordForm.addEventListener('submit', (e) => {
+    recordForm.addEventListener('submit', async (e) => {
       e.preventDefault();
+      state.saving = true;
+      app();
+
       const form = new FormData(recordForm);
       const newRecord = {
-        id: crypto.randomUUID(),
-        tutor: form.get('tutor'),
-        pet: form.get('pet'),
-        phone: form.get('phone'),
-        type: form.get('type'),
-        date: form.get('date'),
-        vet: form.get('vet'),
-        owner: form.get('owner'),
-        status: form.get('status'),
-        action: form.get('action'),
-        notes: form.get('notes'),
-        createdAt: new Date().toISOString(),
+        tutor: String(form.get('tutor') || '').trim(),
+        pet: String(form.get('pet') || '').trim(),
+        phone: String(form.get('phone') || '').trim(),
+        type: String(form.get('type') || '').trim(),
+        date: String(form.get('date') || '').trim(),
+        vet: String(form.get('vet') || '').trim(),
+        owner: String(form.get('owner') || '').trim(),
+        status: String(form.get('status') || '').trim(),
+        action: String(form.get('action') || '').trim(),
+        notes: String(form.get('notes') || '').trim(),
       };
-      const records = getRecords();
-      records.push(newRecord);
-      saveRecords(records);
+
+      const { error } = await supabase.from('registros').insert(toDbRecord(newRecord));
+      state.saving = false;
+
+      if (error) {
+        console.error(error);
+        alert(`Não foi possível salvar o registro. ${error.message}`);
+        app();
+        return;
+      }
+
       alert('Registro salvo com sucesso.');
       state.view = 'records';
-      app();
+      await loadRecords();
     });
   }
 
@@ -602,17 +681,20 @@ function bindEvents() {
   }
 
   document.querySelectorAll('[data-action]').forEach(btn => {
-    btn.addEventListener('click', () => quickUpdate(btn.dataset.id, btn.dataset.action));
+    btn.addEventListener('click', async () => {
+      await quickUpdate(btn.dataset.id, btn.dataset.action);
+    });
   });
 
   document.querySelectorAll('[data-delete-id]').forEach(btn => {
-    btn.addEventListener('click', () => deleteRecord(btn.dataset.deleteId));
+    btn.addEventListener('click', async () => {
+      await deleteRecord(btn.dataset.deleteId);
+    });
   });
 }
 
-function quickUpdate(id, actionType) {
-  const records = getRecords();
-  const record = records.find(r => r.id === id);
+async function quickUpdate(id, actionType) {
+  const record = state.records.find(r => r.id === id);
   if (!record) return;
 
   const map = {
@@ -621,23 +703,58 @@ function quickUpdate(id, actionType) {
     noanswer: { status: 'Sem resposta', action: `Tentativa sem resposta por ${state.user.name}` },
   };
 
-  record.status = map[actionType].status;
-  record.action = map[actionType].action;
-  saveRecords(records);
-  app();
+  const meta = {
+    vet: record.vet || '',
+    action: map[actionType].action,
+    notes: record.notes || '',
+    date: record.date || '',
+  };
+
+  const { error } = await supabase
+    .from('registros')
+    .update({
+      status: map[actionType].status,
+      observacao: JSON.stringify(meta),
+      atualizado_em: new Date().toISOString(),
+      responsavel: record.owner,
+    })
+    .eq('id', id);
+
+  if (error) {
+    console.error(error);
+    alert(`Não foi possível atualizar o registro. ${error.message}`);
+    return;
+  }
+
+  await loadRecords();
 }
 
-function deleteRecord(id) {
-  const records = getRecords();
-  const record = records.find(r => r.id === id);
+async function deleteRecord(id) {
+  const record = state.records.find(r => r.id === id);
   if (!record) return;
 
   const confirmed = window.confirm(`Deseja realmente excluir o registro de ${record.tutor} / ${record.pet}?`);
   if (!confirmed) return;
 
-  const updated = records.filter(r => r.id !== id);
-  saveRecords(updated);
-  app();
+  const { error } = await supabase.from('registros').delete().eq('id', id);
+  if (error) {
+    console.error(error);
+    alert(`Não foi possível excluir o registro. ${error.message}`);
+    return;
+  }
+
+  await loadRecords();
 }
 
-app();
+async function init() {
+  app();
+  await initSupabase();
+  if (state.user && state.configReady) {
+    await loadRecords();
+  } else {
+    state.loading = false;
+    app();
+  }
+}
+
+init();

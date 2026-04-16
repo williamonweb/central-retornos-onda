@@ -405,3 +405,13 @@ textarea { min-height: 92px; resize: vertical; }
 }
 .done-panel { border-color: rgba(34,197,94,.18); }
 .pending-panel { border-color: rgba(245,158,11,.18); }
+
+
+.app-alert {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(239,68,68,.12);
+  border: 1px solid rgba(239,68,68,.18);
+  color: #fecaca;
+}
