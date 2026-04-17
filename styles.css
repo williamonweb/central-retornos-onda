@@ -421,3 +421,92 @@ textarea { min-height: 92px; resize: vertical; }
 .sidebar{position:relative !important; left:0 !important; width:100% !important; height:auto !important;}
 .main-layout{grid-template-columns:1fr !important;}
 }
+@media (max-width: 768px) {
+  body {
+    overflow-x: hidden;
+  }
+
+  .app-shell,
+  .main-layout,
+  .dashboard-layout,
+  .content,
+  main {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .sidebar {
+    width: 100%;
+    max-width: 100%;
+    position: relative;
+    left: 0;
+    top: 0;
+    height: auto;
+    border-radius: 0;
+  }
+
+  .content,
+  main {
+    padding: 14px !important;
+  }
+
+  .topbar {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .topbar h1,
+  .topbar p {
+    margin: 0;
+  }
+
+  .user-chip {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .stats-grid,
+  .panel-grid,
+  .report-grid,
+  .form-grid,
+  .filters {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 14px;
+  }
+
+  .card,
+  .panel,
+  .stat-card,
+  .summary-card,
+  .report-card,
+  .form-card,
+  .records-card {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .records-table {
+    min-width: 0 !important;
+    width: 100%;
+  }
+
+  .logo-card,
+  .sidebar-footer,
+  .nav button,
+  .logout-btn {
+    width: 100%;
+    box-sizing: border-box;
+  }
+}
