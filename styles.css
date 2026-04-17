@@ -415,3 +415,9 @@ textarea { min-height: 92px; resize: vertical; }
   border: 1px solid rgba(239,68,68,.18);
   color: #fecaca;
 }
+
+/* MOBILE FIX */
+@media (max-width:900px){
+.sidebar{position:relative !important; left:0 !important; width:100% !important; height:auto !important;}
+.main-layout{grid-template-columns:1fr !important;}
+}
